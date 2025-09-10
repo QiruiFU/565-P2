@@ -30,6 +30,9 @@ namespace StreamCompaction {
          */
         void scan(int n, int *odata, const int *idata) {
             timer().startGpuTimer();
+            
+            // TODO
+
             int blockSize = 1024;
             int gridSize = (n + blockSize - 1) / blockSize;
 
