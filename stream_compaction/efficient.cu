@@ -3,6 +3,8 @@
 #include "common.h"
 #include "efficient.h"
 
+#define myblockSize 512
+
 namespace StreamCompaction {
     namespace Efficient {
         using StreamCompaction::Common::PerformanceTimer;
@@ -30,11 +32,83 @@ namespace StreamCompaction {
 			data[idx] += temp;
         }
 
-        //__global__ void addSelf(int n, int* data, const int* self) {
-        //    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-        //    if (idx >= n) return;
-        //    data[idx] += self[idx];
-        //}
+        __global__ void scanBlocks(int n, int* odata, const int* idata, int* block_sum) {
+            __shared__ int cache[myblockSize];
+
+            // move in
+            int tid = threadIdx.x;
+            int global_idx = blockIdx.x * blockDim.x + tid;
+            if (global_idx < n) {
+                cache[tid] = idata[blockIdx.x * blockDim.x + tid];
+            }
+            else {
+                cache[tid] = 0;
+            }
+
+            __syncthreads();
+
+            // up sweep
+            int iter = 0, temp_n = blockDim.x;
+			while (temp_n >>= 1) {
+                iter++;
+			}
+
+            for (int d = 1; d <= iter; d++) {
+				int idx = ((tid + 1) << d) - 1;
+                if (idx < myblockSize) {
+					int left_son = idx - (1 << (d - 1));
+					cache[idx] += cache[left_son];
+                }
+				__syncthreads();
+            }
+
+            //
+            if (tid == 0) {
+                block_sum[blockIdx.x] = cache[myblockSize - 1];
+                cache[myblockSize - 1] = 0;
+            }
+			__syncthreads();
+
+            // down sweep
+            for (int d = iter; d >= 1; d--) {
+				int idx = ((tid + 1) << d) - 1;
+                if (idx < myblockSize) {
+					int left_son = idx - (1 << (d - 1));
+					int temp = cache[left_son];
+					cache[left_son] = cache[idx];
+					cache[idx] += temp;
+                }
+				__syncthreads();
+            }
+
+            if(global_idx < n) odata[blockIdx.x * blockDim.x + tid] = cache[tid];
+        }
+
+        __global__ void addOffsets(int n, int* data, const int* offsets) {
+            int tid = threadIdx.x + blockDim.x * blockIdx.x;
+            if (tid >= n) return;
+            if (blockIdx.x > 0) {
+            int offset = offsets[blockIdx.x];
+            data[tid] += offset;
+            }
+        }
+
+        // you can assume the n has already been ceiled to power of 2
+        void exclusiveScan(int n, int* dev_odata, const int* dev_idata) {
+            int blockCnt = (n + myblockSize - 1) / myblockSize;
+
+            int* dev_block_sum_scan, * dev_block_sum;
+            cudaMalloc((void**)&dev_block_sum, blockCnt * sizeof(int));
+            cudaMalloc((void**)&dev_block_sum_scan, blockCnt * sizeof(int));
+
+            scanBlocks << <blockCnt, myblockSize >> > (n, dev_odata, dev_idata, dev_block_sum);
+
+            if (blockCnt > 1) {
+                exclusiveScan(blockCnt, dev_block_sum_scan, dev_block_sum);
+                addOffsets << <blockCnt, myblockSize >> > (n, dev_odata, dev_block_sum_scan);
+            }
+        }
+
 
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
@@ -45,15 +119,15 @@ namespace StreamCompaction {
             int iter = ilog2ceil(n);
             int n_ceil = 1 << iter;
 
-            int blockSize = 1024;
-
-            int* dev_data;
+            int* dev_idata, * dev_odata;
             //int* dev_input;
-            cudaMalloc((void**)&dev_data, n_ceil * sizeof(int));
-            cudaMemcpy(dev_data, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            cudaMalloc((void**)&dev_idata, n_ceil * sizeof(int));
+            cudaMalloc((void**)&dev_odata, n_ceil * sizeof(int));
+            cudaMemcpy(dev_idata, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
             timer().startGpuTimer();
-            for (int d = 1; d <= iter; d++) {
+            exclusiveScan(n_ceil, dev_odata, dev_idata);
+            /*for (int d = 1; d <= iter; d++) {
                 int gridSize = n_ceil >> d;
                 upSweep << <gridSize, blockSize >> > (n_ceil, dev_data, d);
             }
@@ -63,19 +137,14 @@ namespace StreamCompaction {
             for (int d = iter; d >= 1; d--) {
                 int gridSize = n_ceil >> d;
                 downSweep << <gridSize, blockSize >> > (n_ceil, dev_data, d);
-            }
+            }*/
 
             timer().endGpuTimer();
-   //         cudaMalloc((void**)&dev_input, n * sizeof(int));
-   //         cudaMemcpy(dev_input, idata, n * sizeof(int), cudaMemcpyHostToDevice);
-   //         int gridSize = (n + blockSize - 1) / blockSize;
-			//addSelf << <gridSize, blockSize >> > (n, dev_data, dev_input);
 
-            cudaMemcpy(odata, dev_data, n * sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(odata, dev_odata, n * sizeof(int), cudaMemcpyDeviceToHost);
 
-            cudaFree(dev_data);
-            //cudaFree(dev_input);
-
+            cudaFree(dev_idata);
+            cudaFree(dev_odata);
         }
 
         /**
@@ -93,35 +162,22 @@ namespace StreamCompaction {
 			int iter = ilog2ceil(n);
             int n_ceil = 1 << iter;
 
-            int blockSize = 1024;
-            int gridSize = (n + blockSize - 1) / blockSize;
+            int gridSize = (n + myblockSize - 1) / myblockSize;
             int* dev_indices, * dev_idata, * dev_odata, *dev_bools;
             int* indices = (int*)malloc(n * sizeof(int));
             int* bools = (int*)malloc(n * sizeof(int));
             cudaMalloc((void**)&dev_indices, n_ceil * sizeof(int));
             cudaMalloc((void**)&dev_idata, n * sizeof(int));
             cudaMalloc((void**)&dev_odata, n * sizeof(int));
-            cudaMalloc((void**)&dev_bools, n * sizeof(int));
+            cudaMalloc((void**)&dev_bools, n_ceil * sizeof(int));
             cudaMemcpy(dev_idata, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
             timer().startGpuTimer();
-            Common::kernMapToBoolean<<<gridSize, blockSize>>>(n, dev_bools, dev_idata);
-            cudaMemcpy(dev_indices, dev_bools, n * sizeof(int), cudaMemcpyDeviceToDevice);
-            
-            // scan
-            for (int d = 1; d <= iter; d++) {
-                int ceilGridSize = n_ceil >> d;
-                upSweep << <ceilGridSize, blockSize >> > (n_ceil, dev_indices, d);
-            }
 
-            cudaMemset(dev_indices + (n_ceil - 1), 0, sizeof(int));
+            Common::kernMapToBoolean<<<gridSize, myblockSize>>>(n, dev_bools, dev_idata);
+            exclusiveScan(n_ceil, dev_indices, dev_bools);
+            Common::kernScatter << <gridSize, myblockSize >> > (n, dev_odata, dev_idata, dev_bools, dev_indices);
 
-            for (int d = iter; d >= 1; d--) {
-                int ceilGridSize = n_ceil >> d;
-                downSweep << <ceilGridSize, blockSize >> > (n_ceil, dev_indices, d);
-            }
-
-            Common::kernScatter << <gridSize, blockSize >> > (n, dev_odata, dev_idata, dev_bools, dev_indices);
             timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_odata, n * sizeof(int), cudaMemcpyDeviceToHost);

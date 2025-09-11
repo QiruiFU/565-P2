@@ -15,14 +15,15 @@ namespace StreamCompaction {
         __global__ void computePresumIter(int n, int* odata, const int* idata, const int stride) {
             int idx = blockDim.x * blockIdx.x + threadIdx.x;
             if (idx >= n) return;
-            odata[idx] = idata[idx];
 
-            __syncthreads();
+            int val = idata[idx];
 
-            int target = (1 << (stride - 1)) + idx;
-            if (target < n) {
-				odata[target] = idata[idx] + idata[target];
+            int target = idx - (1 << (stride - 1));
+            if (target >= 0) {
+                val += idata[target];
             }
+
+            odata[idx] = val;
         }
 
         __global__ void moveKernel(int n, int* odata, const int* idata) {
@@ -34,30 +35,31 @@ namespace StreamCompaction {
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
-        void scan(int n, int *odata, const int *idata) {
-            
+        void scan(int n, int* odata, const int* idata) {
+
             // TODO
 
-            int blockSize = 1024;
+            int blockSize = 512;
             int gridSize = (n + blockSize - 1) / blockSize;
 
             int* dev_odata_1, * dev_odata_2;
             cudaMalloc((void**)&dev_odata_1, n * sizeof(int));
             cudaMalloc((void**)&dev_odata_2, n * sizeof(int));
             cudaMemcpy(dev_odata_1, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+            //cudaMemcpy(dev_odata_2, dev_odata_1, n * sizeof(int), cudaMemcpyDeviceToDevice);
 
             timer().startGpuTimer();
             // Kernel
             int iter = ilog2ceil(n);
             for (int d = 1; d <= iter; d++) {
-                computePresumIter<<<gridSize, blockSize>>>(n, dev_odata_2, dev_odata_1, d);
+                computePresumIter << <gridSize, blockSize >> > (n, dev_odata_2, dev_odata_1, d);
                 int* temp = dev_odata_1;
                 dev_odata_1 = dev_odata_2;
                 dev_odata_2 = temp;
             }
 
             moveKernel << <gridSize, blockSize >> > (n, dev_odata_2, dev_odata_1);
-            
+
             timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_odata_2, n * sizeof(int), cudaMemcpyDeviceToHost);
