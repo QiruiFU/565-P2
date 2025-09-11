@@ -25,11 +25,16 @@ namespace StreamCompaction {
             }
         }
 
+        __global__ void moveKernel(int n, int* odata, const int* idata) {
+            int idx = blockDim.x * blockIdx.x + threadIdx.x;
+            if (idx > n - 2 || idx < 0) return;
+            odata[idx + 1] = idata[idx];
+        }
+
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
         void scan(int n, int *odata, const int *idata) {
-            timer().startGpuTimer();
             
             // TODO
 
@@ -41,6 +46,7 @@ namespace StreamCompaction {
             cudaMalloc((void**)&dev_odata_2, n * sizeof(int));
             cudaMemcpy(dev_odata_1, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
+            timer().startGpuTimer();
             // Kernel
             int iter = ilog2ceil(n);
             for (int d = 1; d <= iter; d++) {
@@ -50,11 +56,15 @@ namespace StreamCompaction {
                 dev_odata_2 = temp;
             }
 
-            cudaMemcpy(odata, dev_odata_1, n * sizeof(int), cudaMemcpyDeviceToHost);
+            moveKernel << <gridSize, blockSize >> > (n, dev_odata_2, dev_odata_1);
+            
+            timer().endGpuTimer();
+
+            cudaMemcpy(odata, dev_odata_2, n * sizeof(int), cudaMemcpyDeviceToHost);
+            odata[0] = 0;
+
             cudaFree(dev_odata_1);
             cudaFree(dev_odata_2);
-
-            timer().endGpuTimer();
         }
     }
 }

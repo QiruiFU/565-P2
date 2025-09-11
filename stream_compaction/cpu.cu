@@ -21,9 +21,9 @@ namespace StreamCompaction {
             timer().startCpuTimer();
             // TODO
 
-            odata[0] = idata[0];
+            odata[0] = 0;
             for (int i = 1; i < n; i++) {
-                odata[i] = odata[i - 1] + idata[i];
+                odata[i] = odata[i - 1] + idata[i - 1];
             }
             timer().endCpuTimer();
         }
@@ -55,23 +55,35 @@ namespace StreamCompaction {
             timer().startCpuTimer();
             // TODO
 
-            odata[0] = idata[0];
-            for (int i = 1; i < n; i++) {
-                odata[i] = odata[i - 1] + idata[i];
-            }
-
-            int cur_sum = 0, idx = 0;
+            int* bools = (int*)malloc(n * sizeof(int));
+            int* indices = (int*)malloc(n * sizeof(int));
 
             for (int i = 0; i < n; i++) {
-                int pre_sum = odata[i];
-                if (odata[i] != cur_sum) {
-                    odata[idx++] = idata[i];
+                if (idata[i] != 0) {
+                    bools[i] = 1;
                 }
-                cur_sum = pre_sum;
+                else {
+                    bools[i] = 0;
+                }
             }
 
+            indices[0] = 0;
+            for (int i = 1; i < n; i++) {
+                indices[i] = indices[i - 1] + bools[i - 1];
+            }
+
+            for (int i = 0; i < n; i++) {
+                if (bools[i] == 1) {
+                    odata[indices[i]] = idata[i];
+                }
+            }
+            int ans = indices[n - 1] + (idata[n - 1] ? 1 : 0);
+
+            free(bools);
+            free(indices);
+
             timer().endCpuTimer();
-            return idx;
+            return ans;
         }
     }
 }
