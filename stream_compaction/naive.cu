@@ -39,7 +39,7 @@ namespace StreamCompaction {
 
             // TODO
 
-            int blockSize = 512;
+            int blockSize = 256;
             int gridSize = (n + blockSize - 1) / blockSize;
 
             int* dev_odata_1, * dev_odata_2;
