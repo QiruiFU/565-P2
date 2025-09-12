@@ -5,6 +5,7 @@ CUDA Stream Compaction
 
 * Qirui (Chiray) Fu
   * [personal website](https://qiruifu.github.io/)
+  * I also write a [blog](https://qiruifu.github.io/prefix-sum-blog/) for this project
 * Tested on my own laptop: Windows 11, i5-13500HX @ 2.5GHz 16GB, GTX 4060 8GB
 
 ### README
@@ -32,16 +33,20 @@ For work-efficient implementation with shared memory, best block size is 128 or 
 ##### Comparison of Different Implementations
 
 The length is power of 2:
-<img src="/img/p-4.png" style="width: 70%">
+
+<img src="/img/p-4.png" style="width: 100%">
 
 Only compare work-efficient and thrust:
-<img src="/img/p-2.png" style="width: 70%">
+
+<img src="/img/p-2.png" style="width: 100%">
 
 The length is not power of 2:
-<img src="/img/np-4.png" style="width: 70%">
+
+<img src="/img/np-4.png" style="width: 100%">
 
 Only compare work-efficient and thrust:
-<img src="/img/np-2.png" style="width: 70%">
+
+<img src="/img/np-2.png" style="width: 100%">
 
 From the comparisons, we can say:
 * My implementation of work-efficient with shared memory is as good as thrust when length of array is not very high. When the array gets longer, the time of my method increases more.
